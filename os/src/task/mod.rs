@@ -14,8 +14,10 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
+use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
 use lazy_static::*;
@@ -71,6 +73,28 @@ lazy_static! {
 }
 
 impl TaskManager {
+    /// 增加当前任务对应系统调用次数
+    fn increase_current_syscall(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current_id = inner.current_task;
+        let current_task = &mut inner.tasks[current_id];
+        current_task.syscall_times[syscall_id] += 1;
+    }
+
+    ///返回当前任务的系统调用次数统计数组
+    fn get_task_syscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
+        let inner = self.inner.exclusive_access();
+        let current_id = inner.current_task;
+        inner.tasks[current_id].syscall_times
+    }
+
+    ///返回当前任务的开始时间
+    fn get_task_start_time(&self) -> usize {
+        let inner = self.inner.exclusive_access();
+        let current_id = inner.current_task;
+        inner.tasks[current_id].task_start_time
+    }
+
     /// Run the first task in task list.
     ///
     /// Generally, the first task in task list is an idle task (we call it zero process later).
@@ -80,6 +104,8 @@ impl TaskManager {
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
+        // 记录第一个任务启动的时间
+        next_task.task_start_time = get_time_ms();
         drop(inner);
         let mut _unused = TaskContext::zero_init();
         // before this, we should drop local variables that must be dropped manually
@@ -139,6 +165,10 @@ impl TaskManager {
         if let Some(next) = self.find_next_task() {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
+            // 记录任务第一次被调度的时间
+            if inner.tasks[current].task_start_time == 0 {
+                inner.tasks[current].task_start_time = get_time_ms();
+            }
             inner.tasks[next].task_status = TaskStatus::Running;
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
@@ -153,6 +183,20 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+}
+
+/// 增加当前任务对应系统调用的次数
+pub fn increase_current_syscall(syscall_id: usize) {
+    TASK_MANAGER.increase_current_syscall(syscall_id);
+}
+///返回当前任务的系统调用次数统计数组
+pub fn get_task_syscall_times() -> [u32; MAX_SYSCALL_NUM] {
+    TASK_MANAGER.get_task_syscall_times()
+}
+
+///返回当前任务的开始时间
+pub fn get_task_start_time() -> usize {
+    TASK_MANAGER.get_task_start_time()
 }
 
 /// Run the first task in task list.
