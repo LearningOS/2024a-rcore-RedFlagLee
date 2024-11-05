@@ -63,6 +63,21 @@ impl MemorySet {
             None,
         );
     }
+    /// 删除逻辑段的映射关系
+    pub fn del_framed_area(&mut self, start_va: VirtAddr, end_va: VirtAddr) {
+        let start_vpn = start_va.floor();
+        let end_vpn = end_va.ceil();
+        // 在areas里找到该地址范围对应的逻辑段
+        let area = self
+            .areas
+            .iter_mut()
+            .find(|area| {
+                (area.vpn_range.get_start() == start_vpn) && (area.vpn_range.get_end() == end_vpn)
+            })
+            .unwrap();
+        // 取消该逻辑段的映射关系
+        area.unmap(&mut self.page_table);
+    }
     fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
         map_area.map(&mut self.page_table);
         if let Some(data) = data {

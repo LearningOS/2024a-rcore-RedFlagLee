@@ -16,6 +16,7 @@ mod task;
 
 use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{self, MapPermission, VirtPageNum};
 use crate::sync::UPSafeCell;
 use crate::timer::get_time_ms;
 use crate::trap::TrapContext;
@@ -183,6 +184,83 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+    fn mmap(&self, start: usize, len: usize, port: usize) -> isize {
+        // 获取地址空间
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let m_set = &mut inner.tasks[current].memory_set;
+
+        // 检查起始地址是否页对齐和port的合法性（除低3位外其余全为0且低3位不能全为0）
+        if (start & 0xFFF) != 0 || port & !0x7 != 0 || port & 0x7 == 0 {
+            println!("invaild address or port");
+            return -1;
+        }
+
+        // 检查地址范围内是否存在已经映射的页
+        let start_va = mm::VirtAddr::from(start);
+        let end_va = mm::VirtAddr::from(start + len);
+        let start_vpn: VirtPageNum = start_va.floor();
+        let end_vpn: VirtPageNum = end_va.ceil();
+
+        for vpn in mm::VPNRange::new(start_vpn, end_vpn) {
+            if let Some(pte) = m_set.translate(vpn) {
+                // 已经被映射过了
+                if pte.is_valid() {
+                    println!("address already mapped");
+                    return -1;
+                };
+            }
+        }
+
+        // 将port转换成MapPermission
+        // MapPermission是从第1位开始的，所以port要左移1位，还要注意U位置1
+        let flags = MapPermission::from_bits((port << 1) as u8).unwrap() | MapPermission::U;
+
+        // 以逻辑段为单位将该地址范围加入到应用的地址空间中
+        // 函数内部也是按页处理的
+        m_set.insert_framed_area(start_va, end_va, flags);
+
+        0
+    }
+
+    /// 取消内存映射
+    fn munmap(&self, start: usize, len: usize) -> isize {
+        // 检查start是否对齐
+        if start & 0xFFF != 0 {
+            println!("invaild address or port");
+            return -1;
+        }
+
+        // 获取地址空间
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let m_set = &mut inner.tasks[current].memory_set;
+
+        // 检查地址范围内是否存在没被映射的页
+        let start_va = mm::VirtAddr::from(start);
+        let end_va = mm::VirtAddr::from(start + len);
+        let start_vpn: VirtPageNum = start_va.floor();
+        let end_vpn: VirtPageNum = end_va.ceil();
+
+        for vpn in mm::VPNRange::new(start_vpn, end_vpn) {
+            if let Some(pte) = m_set.translate(vpn) {
+                if !pte.is_valid() {
+                    println!("exists address not mapped");
+                    return -1;
+                };
+            }
+        }
+        m_set.del_framed_area(start_va, end_va);
+        0
+    }
+}
+/// 申请内存
+pub fn mmap(start: usize, len: usize, port: usize) -> isize {
+    TASK_MANAGER.mmap(start, len, port)
+}
+/// 取消内存映射
+pub fn munmap(start: usize, len: usize) -> isize {
+    TASK_MANAGER.munmap(start, len)
 }
 
 /// 增加当前任务对应系统调用的次数

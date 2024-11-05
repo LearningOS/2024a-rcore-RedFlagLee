@@ -68,6 +68,9 @@ pub fn trap_handler() -> ! {
             cx.sepc += 4;
             // 统计系统调用次数
             let syscall_id = cx.x[17];
+            // if syscall_id == 169 {
+            //     println!("this is a get time syscall");
+            // }
             increase_current_syscall(syscall_id);
             // get system call return value
             cx.x[10] = syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12]]) as usize;
