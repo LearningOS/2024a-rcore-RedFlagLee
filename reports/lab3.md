@@ -1,0 +1,9 @@
+## 编程作业
+
+spwan是fork和exec的结合。不同的是地址空间不用从父进程中复制。在exec里通过from_elf从获得相关信息，我们利用这些信息创建新进程TCB和修改Trap上下文。然后再把新进程加入任务就绪队列，并返回新进程id。值得注意的是，由于不需要通过返回值区分父子进程，不需要再设置Trap上下文的返回值寄存器。
+
+为了实现stride调度算法，我们为进程额外维护总路程stride和优先级priority，步长pass由常量BIG_STRIDE/priority获得。文档问答题说过不能将存储类型的最大值作为BIG_STRIDE，所以我们取usize::MAX/2作为BIG_STRIDE。由于stride和priority在任务运行时会变化，我们把它们放到TaskControlBlockInner。TaskManager内部维护一个就绪任务队列，fetch负责从任务就绪队列的队头取出任务执行。我们将fetch改为取就绪队列里stride值最小的执行，直接对就绪队列循环扫描一遍找到stride值最小的任务。
+
+在将lab2代码迁移的时候，在trap_handler里增加系统调用次数时，要注意用current_task获取当前任务修改后，要drop掉，因为后面控制流会变化，不能正常自动释放掉。
+
+## 问答作业

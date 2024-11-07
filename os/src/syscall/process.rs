@@ -5,11 +5,12 @@ use alloc::sync::Arc;
 use crate::{
     config::MAX_SYSCALL_NUM,
     fs::{open_file, OpenFlags},
-    mm::{translated_refmut, translated_str},
+    mm::{translated_refmut, translated_str, translated_byte_buffer},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next, TaskStatus,
+        suspend_current_and_run_next, TaskStatus, mmap, munmap
     },
+    timer::{get_time_ms, get_time_us},
 };
 
 #[repr(C)]
@@ -25,7 +26,7 @@ pub struct TaskInfo {
     /// Task status in it's life cycle
     status: TaskStatus,
     /// The numbers of syscall called by task
-    syscall_times: [u32; MAX_SYSCALL_NUM],
+    syscall_times: [usize; MAX_SYSCALL_NUM],
     /// Total running time of task
     time: usize,
 }
@@ -122,7 +123,42 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
         "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    trace!("kernel: sys_get_time");
+    // 获取当前任务的 token
+    let token = current_user_token();
+
+    // 使用 translated_byte_buffer 获取用户空间的缓冲区可变引用
+    let buffers = translated_byte_buffer(token, _ts as *const u8, core::mem::size_of::<TimeVal>());
+
+    let us = get_time_us();
+    let time = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+    // 生成TimeVal的字节数组
+    let time_slice = unsafe {
+        core::slice::from_raw_parts(
+            &time as *const _ as *const u8,
+            core::mem::size_of::<TimeVal>(),
+        )
+    };
+
+    let mut written = 0;
+    for buffer in buffers.into_iter() {
+        let remaining = core::mem::size_of::<TimeVal>() - written;
+        let write_size = remaining.min(buffer.len());
+        buffer[..write_size].copy_from_slice(&time_slice[written..written + write_size]);
+        written += write_size;
+        if written == core::mem::size_of::<TimeVal>() {
+            return 0; // 成功写入全部数据
+        }
+    }
+
+    if written == 0 {
+        panic!("nothing has written!"); // 没有写入任何数据
+    } else {
+        panic!("written has not completed"); // 只写入了部分数据
+    }
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
@@ -133,7 +169,57 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
         "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    // 获取当前任务
+    let task = current_task().unwrap();
+    let inner = task.inner_exclusive_access();
+
+    // 获取当前任务的 token
+    let token = current_user_token();
+
+    // 使用 translated_byte_buffer 获取用户空间的缓冲区可变引用
+    let buffers = translated_byte_buffer(token, _ti as *const u8, core::mem::size_of::<TaskInfo>());
+
+    let task_info = TaskInfo {
+        status: TaskStatus::Running,
+        syscall_times: inner.syscall_times,
+        time: get_time_ms() - inner.task_start_time,
+    };
+    println!(
+        "info.syscall_times[SYSCALL_GETTIMEOFDAY] = {}",
+        task_info.syscall_times[169]
+    );
+    println!(
+        "info.syscall_times[SYSCALL_YIELD] = {}",
+        task_info.syscall_times[124]
+    );
+    println!(
+        "info.syscall_times[SYSCALL_TASK_INFO] = {}",
+        task_info.syscall_times[410]
+    );
+
+    let task_slice = unsafe {
+        core::slice::from_raw_parts(
+            &task_info as *const TaskInfo as *const u8,
+            core::mem::size_of::<TaskInfo>(),
+        )
+    };
+
+    let mut written = 0;
+    for buffer in buffers.into_iter() {
+        let remaining = core::mem::size_of::<TaskInfo>() - written;
+        let write_size = remaining.min(buffer.len());
+        buffer[..write_size].copy_from_slice(&task_slice[written..written + write_size]);
+        written += write_size;
+        if written == core::mem::size_of::<TaskInfo>() {
+            return 0; // 成功写入全部数据
+        }
+    }
+
+    if written == 0 {
+        panic!("nothing has written!"); // 没有写入任何数据
+    } else {
+        panic!("written has not completed"); // 只写入了部分数据
+    }
 }
 
 /// YOUR JOB: Implement mmap.
@@ -142,7 +228,7 @@ pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
         "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    mmap(_start, _len, _port)
 }
 
 /// YOUR JOB: Implement munmap.
@@ -151,7 +237,7 @@ pub fn sys_munmap(_start: usize, _len: usize) -> isize {
         "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    munmap(_start, _len)
 }
 
 /// change data segment size
@@ -167,12 +253,25 @@ pub fn sys_sbrk(size: i32) -> isize {
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
 pub fn sys_spawn(_path: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
+    // trace!(
+    //     "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
+    //     current_task().unwrap().pid.0
+    // );
+    // let token=current_user_token();
+    // let path=translated_str(token, _path);
+    // if let Some(data)=get_app_data_by_name(path.as_str()){
+    //     let current_task=current_task().unwrap();
+    //     let task=current_task.spawn(data);
+    //     let pid=task.getpid();
+    //     add_task(task);
+    //     pid as isize
+    // }
+    // else {
+    //     -1
+    // }
     -1
 }
+
 
 // YOUR JOB: Set task priority.
 pub fn sys_set_priority(_prio: isize) -> isize {
@@ -180,5 +279,10 @@ pub fn sys_set_priority(_prio: isize) -> isize {
         "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    if _prio<=1{
+        return -1;
+    }
+    else{
+        current_task().unwrap().set_priority(_prio)
+    }
 }

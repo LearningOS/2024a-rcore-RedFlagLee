@@ -9,7 +9,9 @@ use super::{fetch_task, TaskStatus};
 use super::{TaskContext, TaskControlBlock};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
+use crate::mm::{VirtAddr,VirtPageNum, MapPermission, VPNRange};
 use alloc::sync::Arc;
+use crate::timer::get_time_ms;
 use lazy_static::*;
 
 /// Processor management structure
@@ -61,6 +63,9 @@ pub fn run_tasks() {
             let mut task_inner = task.inner_exclusive_access();
             let next_task_cx_ptr = &task_inner.task_cx as *const TaskContext;
             task_inner.task_status = TaskStatus::Running;
+            if task_inner.task_start_time == 0 {
+                task_inner.task_start_time = get_time_ms();
+            }
             // release coming task_inner manually
             drop(task_inner);
             // release coming task TCB manually
@@ -109,3 +114,74 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
         __switch(switched_task_cx_ptr, idle_task_cx_ptr);
     }
 }
+
+/// 建立内存映射
+pub fn mmap(start: usize, len: usize, port: usize) -> isize {
+        // 获取地址空间
+        let task = current_task().unwrap();
+        let mut task_inner = task.inner_exclusive_access();
+        let m_set = &mut task_inner.memory_set;
+
+        // 检查起始地址是否页对齐和port的合法性（除低3位外其余全为0且低3位不能全为0）
+        if (start & 0xFFF) != 0 || port & !0x7 != 0 || port & 0x7 == 0 {
+            println!("invaild address or port");
+            return -1;
+        }
+
+        // 检查地址范围内是否存在已经映射的页
+        let start_va = VirtAddr::from(start);
+        let end_va = VirtAddr::from(start + len);
+        let start_vpn: VirtPageNum = start_va.floor();
+        let end_vpn: VirtPageNum = end_va.ceil();
+
+        for vpn in VPNRange::new(start_vpn, end_vpn) {
+            if let Some(pte) = m_set.translate(vpn) {
+                // 已经被映射过了
+                if pte.is_valid() {
+                    println!("address already mapped");
+                    return -1;
+                };
+            }
+        }
+
+        // 将port转换成MapPermission
+        // MapPermission是从第1位开始的，所以port要左移1位，还要注意U位置1
+        let flags = MapPermission::from_bits((port << 1) as u8).unwrap() | MapPermission::U;
+
+        // 以逻辑段为单位将该地址范围加入到应用的地址空间中
+        // 函数内部也是按页处理的
+        m_set.insert_framed_area(start_va, end_va, flags);
+
+        0
+    }
+
+/// 取消内存映射
+    pub fn munmap(start: usize, len: usize) -> isize {
+        // 检查start是否对齐
+        if start & 0xFFF != 0 {
+            println!("invaild address or port");
+            return -1;
+        }
+
+        // 获取地址空间
+        let task = current_task().unwrap();
+        let mut task_inner = task.inner_exclusive_access();
+        let m_set = &mut task_inner.memory_set;
+
+        // 检查地址范围内是否存在没被映射的页
+        let start_va = VirtAddr::from(start);
+        let end_va = VirtAddr::from(start + len);
+        let start_vpn: VirtPageNum = start_va.floor();
+        let end_vpn: VirtPageNum = end_va.ceil();
+
+        for vpn in VPNRange::new(start_vpn, end_vpn) {
+            if let Some(pte) = m_set.translate(vpn) {
+                if !pte.is_valid() {
+                    println!("exists address not mapped");
+                    return -1;
+                };
+            }
+        }
+        m_set.del_framed_area(start_va, end_va);
+        0
+    }
