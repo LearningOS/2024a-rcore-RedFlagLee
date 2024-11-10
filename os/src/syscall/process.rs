@@ -5,10 +5,10 @@ use alloc::sync::Arc;
 use crate::{
     config::MAX_SYSCALL_NUM,
     fs::{open_file, OpenFlags},
-    mm::{translated_refmut, translated_str, translated_byte_buffer},
+    mm::{translated_byte_buffer, translated_refmut, translated_str},
     task::{
-        add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next, TaskStatus, mmap, munmap
+        add_task, current_task, current_user_token, exit_current_and_run_next, mmap, munmap,
+        suspend_current_and_run_next, TaskStatus,
     },
     timer::{get_time_ms, get_time_us},
 };
@@ -253,12 +253,12 @@ pub fn sys_sbrk(size: i32) -> isize {
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
 pub fn sys_spawn(_path: *const u8) -> isize {
-    // trace!(
-    //     "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
-    //     current_task().unwrap().pid.0
-    // );
-    // let token=current_user_token();
-    // let path=translated_str(token, _path);
+    trace!(
+        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
+        current_task().unwrap().pid.0
+    );
+    let token = current_user_token();
+    let path = translated_str(token, _path);
     // if let Some(data)=get_app_data_by_name(path.as_str()){
     //     let current_task=current_task().unwrap();
     //     let task=current_task.spawn(data);
@@ -269,9 +269,17 @@ pub fn sys_spawn(_path: *const u8) -> isize {
     // else {
     //     -1
     // }
-    -1
+    if let Some(app_inode) = open_file(path.as_str(), OpenFlags::RDONLY) {
+        let all_data = app_inode.read_all();
+        let current_task = current_task().unwrap();
+        let task = current_task.spawn(all_data.as_slice());
+        let pid = task.getpid();
+        add_task(task);
+        pid as isize
+    } else {
+        -1
+    }
 }
-
 
 // YOUR JOB: Set task priority.
 pub fn sys_set_priority(_prio: isize) -> isize {
@@ -279,10 +287,9 @@ pub fn sys_set_priority(_prio: isize) -> isize {
         "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    if _prio<=1{
-        return -1;
-    }
-    else{
+    if _prio <= 1 {
+        -1
+    } else {
         current_task().unwrap().set_priority(_prio)
     }
 }

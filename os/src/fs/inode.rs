@@ -6,6 +6,7 @@
 //! need to wrap `OSInodeInner` into `UPSafeCell`
 use super::File;
 use crate::drivers::BLOCK_DEVICE;
+use crate::fs::StatMode;
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
 use alloc::sync::Arc;
@@ -124,6 +125,15 @@ pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
     }
 }
 
+/// 建立硬连接
+pub fn linkat(_old_name: &str, _new_name: &str) -> isize {
+    ROOT_INODE.add_link(_old_name, _new_name)
+}
+/// 取消硬连接
+pub fn unlinkat(name: &str) -> isize {
+    ROOT_INODE.remove_link(name)
+}
+
 impl File for OSInode {
     fn readable(&self) -> bool {
         self.readable
@@ -154,5 +164,16 @@ impl File for OSInode {
             total_write_size += write_size;
         }
         total_write_size
+    }
+    fn get_metadata(&self) -> (u64, StatMode, u32) {
+        let mut mode = StatMode::NULL;
+        let (ino, mode_num) = self.inner.exclusive_access().inode.get_metadata();
+        if mode_num == 0o040000 {
+            mode |= StatMode::DIR;
+        } else {
+            mode |= StatMode::FILE;
+        }
+        log::debug!("exit get_metadata");
+        (ino, mode, ROOT_INODE.get_links(ino as u32))
     }
 }
