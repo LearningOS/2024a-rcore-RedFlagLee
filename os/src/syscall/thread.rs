@@ -3,7 +3,7 @@ use crate::{
     task::{add_task, current_task, TaskControlBlock},
     trap::{trap_handler, TrapContext},
 };
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec};
 /// thread create syscall
 pub fn sys_thread_create(entry: usize, arg: usize) -> isize {
     trace!(
@@ -36,6 +36,14 @@ pub fn sys_thread_create(entry: usize, arg: usize) -> isize {
     let new_task_tid = new_task_res.tid;
     let mut process_inner = process.inner_exclusive_access();
     // add new thread to current process
+    if let Some((detect1, detect2)) = process_inner.deadlock_detect.as_mut() {
+        let len1 = detect1.available.len();
+        detect1.allocation.push(vec![0; len1]);
+        detect1.need.push(vec![0; len1]);
+        let len2 = detect2.available.len();
+        detect2.allocation.push(vec![0; len2]);
+        detect2.need.push(vec![0; len2]);
+    }
     let tasks = &mut process_inner.tasks;
     while tasks.len() < new_task_tid + 1 {
         tasks.push(None);

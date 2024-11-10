@@ -24,6 +24,9 @@
 #![no_main]
 #![feature(panic_info_message)]
 #![feature(alloc_error_handler)]
+#![feature(btree_extract_if)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(clippy::new_without_default)]
 
 #[macro_use]
 extern crate log;

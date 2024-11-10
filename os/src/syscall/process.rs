@@ -1,13 +1,19 @@
+//! Process management syscalls
+//!
+use alloc::{sync::Arc, vec::Vec};
+
 use crate::{
-    config::MAX_SYSCALL_NUM,
+    config::{MAX_SYSCALL_NUM, PAGE_SIZE},
     fs::{open_file, OpenFlags},
     mm::{translated_ref, translated_refmut, translated_str},
+    syscall::mem_out,
     task::{
-        current_process, current_task, current_user_token, exit_current_and_run_next, pid2process,
-        suspend_current_and_run_next, SignalFlags, TaskStatus,
+        current_process, current_task, current_user_token, exit_current_and_run_next, mmap_page,
+        munmap_page, pid2process, suspend_current_and_run_next, SignalFlags, TaskStatus,
     },
+    timer::{get_time_ms, get_time_us},
 };
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::string::String;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -162,12 +168,18 @@ pub fn sys_kill(pid: usize, signal: u32) -> isize {
 /// YOUR JOB: get time with second and microsecond
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_get_time",
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
-    -1
+    let time = get_time_us();
+    let results = TimeVal {
+        sec: time / 1_000_000,
+        usec: time % 1_000_000,
+    };
+    mem_out(ts as usize, results);
+    0
 }
 
 /// task_info syscall
@@ -175,34 +187,70 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
 /// YOUR JOB: Finish sys_task_info to pass testcases
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TaskInfo`] is splitted by two pages ?
-pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
+pub fn sys_task_info(ti: *mut TaskInfo) -> isize {
     trace!(
-        "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_task_info",
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
-    -1
+    let task_info = current_task().unwrap().get_task_info();
+    let current_time = get_time_ms();
+    let time = current_time - task_info.first_schedule_time.unwrap().get();
+    let mut syscall_times = [0; MAX_SYSCALL_NUM];
+    for (k, v) in task_info.syscall_times.iter() {
+        syscall_times[*k as usize] = *v;
+    }
+    mem_out(
+        ti as usize,
+        TaskInfo {
+            status: TaskStatus::Running,
+            syscall_times,
+            time,
+        },
+    );
+    0
 }
 
-/// mmap syscall
-///
-/// YOUR JOB: Implement mmap.
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
+// YOUR JOB: Implement mmap.
+pub fn sys_mmap(start: usize, len: usize, port: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_mmap",
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
-    -1
+    if start % PAGE_SIZE != 0 {
+        log::info!("sys_mmap: start not page aligned");
+        return -1;
+    }
+    if len == 0 {
+        return 0;
+    }
+    if port & !0b111 != 0 || port & 0b111 == 0 {
+        log::info!("sys_mmap: invalid port");
+        return -1;
+    }
+    if !mmap_page(start, len, port) {
+        log::info!("sys_mmap: failed to mmap");
+        return -1;
+    }
+
+    0
 }
 
-/// munmap syscall
-///
-/// YOUR JOB: Implement munmap.
-pub fn sys_munmap(_start: usize, _len: usize) -> isize {
+// YOUR JOB: Implement munmap.
+pub fn sys_munmap(start: usize, len: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_munmap",
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
-    -1
+    if start % PAGE_SIZE != 0 {
+        log::info!("sys_munmap: start not page aligned");
+        return -1;
+    }
+    let len = (len + PAGE_SIZE - 1) / PAGE_SIZE * PAGE_SIZE;
+    if !munmap_page(start, len) {
+        log::info!("sys_munmap: failed to munmap");
+        return -1;
+    }
+    0
 }
 
 /// change data segment size
@@ -217,21 +265,31 @@ pub fn sys_munmap(_start: usize, _len: usize) -> isize {
 /// spawn syscall
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
-pub fn sys_spawn(_path: *const u8) -> isize {
+pub fn sys_spawn(path: *const u8) -> isize {
     trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_spawn",
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
-    -1
+    let token = current_user_token();
+    let path = translated_str(token, path);
+
+    let Some(app_inode) = open_file(path.as_str(), OpenFlags::RDONLY) else {
+        return -1;
+    };
+    let all_data = app_inode.read_all();
+    let process = current_process();
+    process.spawn(&all_data).getpid() as isize
 }
 
-/// set priority syscall
-///
-/// YOUR JOB: Set task priority
-pub fn sys_set_priority(_prio: isize) -> isize {
+// YOUR JOB: Set task priority.
+pub fn sys_set_priority(prio: isize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_set_priority",
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
-    -1
+    if prio < 2 {
+        return -1;
+    }
+    current_task().unwrap().set_priority(prio as usize);
+    prio
 }

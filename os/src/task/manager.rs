@@ -5,14 +5,40 @@
 
 use super::{ProcessControlBlock, TaskControlBlock, TaskStatus};
 use crate::sync::UPSafeCell;
-use alloc::collections::{BTreeMap, VecDeque};
+use alloc::collections::binary_heap::BinaryHeap;
+use alloc::collections::btree_map::BTreeMap;
 use alloc::sync::Arc;
 use lazy_static::*;
-///A array of `TaskControlBlock` that is thread-safe
+
+struct TCBCmp(Arc<TaskControlBlock>);
+
+impl PartialEq for TCBCmp {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.inner_exclusive_access().stride == other.0.inner_exclusive_access().stride
+    }
+}
+
+impl Eq for TCBCmp {}
+
+impl PartialOrd for TCBCmp {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for TCBCmp {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.0
+            .inner_exclusive_access()
+            .stride
+            .cmp(&other.0.inner_exclusive_access().stride)
+            .reverse()
+    }
+}
+
+/// A array of `TaskControlBlock` that is thread-safe
 pub struct TaskManager {
-    ready_queue: VecDeque<Arc<TaskControlBlock>>,
-    
-    /// The stopping task, leave a reference so that the kernel stack will not be recycled when switching tasks
+    ready_queue: BinaryHeap<TCBCmp>,
     stop_task: Option<Arc<TaskControlBlock>>,
 }
 
@@ -21,27 +47,25 @@ impl TaskManager {
     ///Creat an empty TaskManager
     pub fn new() -> Self {
         Self {
-            ready_queue: VecDeque::new(),
+            ready_queue: BinaryHeap::new(),
             stop_task: None,
         }
     }
     /// Add process back to ready queue
     pub fn add(&mut self, task: Arc<TaskControlBlock>) {
-        self.ready_queue.push_back(task);
+        self.ready_queue.push(TCBCmp(task));
     }
     /// Take a process out of the ready queue
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
-        self.ready_queue.pop_front()
+        let res = self.ready_queue.pop()?.0;
+        let mut inner = res.inner_exclusive_access();
+        inner.stride += inner.pass;
+        drop(inner);
+        Some(res)
     }
     pub fn remove(&mut self, task: Arc<TaskControlBlock>) {
-        if let Some((id, _)) = self
-            .ready_queue
-            .iter()
-            .enumerate()
-            .find(|(_, t)| Arc::as_ptr(t) == Arc::as_ptr(&task))
-        {
-            self.ready_queue.remove(id);
-        }
+        self.ready_queue
+            .retain(|t| Arc::as_ptr(&t.0) != Arc::as_ptr(&task));
     }
     /// Add a task to stopping task
     pub fn add_stop(&mut self, task: Arc<TaskControlBlock>) {
@@ -50,7 +74,6 @@ impl TaskManager {
         // case) so that we can simply replace it;
         self.stop_task = Some(task);
     }
-
 }
 
 lazy_static! {

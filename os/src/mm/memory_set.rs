@@ -293,6 +293,51 @@ impl MemorySet {
             false
         }
     }
+
+    /// remove the area from start to end
+    pub fn remove(&mut self, start: VirtAddr, end: VirtAddr) {
+        let start = start.floor();
+        let end = end.ceil();
+        let mut to_remove = Vec::new();
+        let len = self.areas.len();
+        for i in 0..len {
+            let range_start = self.areas[i].vpn_range.get_start();
+            let range_end = self.areas[i].vpn_range.get_end();
+            if (start..end).contains(&range_start) {
+                let remove_end = range_end.min(end);
+                for vpn in VPNRange::new(range_start, remove_end) {
+                    self.areas[i].unmap_one(&mut self.page_table, vpn);
+                }
+                if remove_end == range_end {
+                    to_remove.push(i);
+                } else {
+                    self.areas[i].vpn_range = VPNRange::new(remove_end, range_end);
+                }
+            } else if (range_start..range_end).contains(&start) {
+                let remove_end = range_end.min(end);
+                for vpn in VPNRange::new(range_start, remove_end) {
+                    self.areas[i].unmap_one(&mut self.page_table, vpn);
+                }
+                self.areas[i].vpn_range = VPNRange::new(range_start, start);
+                if remove_end != range_end {
+                    let data_frames = if self.areas[i].map_type == MapType::Framed {
+                        self.areas[i]
+                            .data_frames
+                            .extract_if(|k, _| (remove_end..range_end).contains(k))
+                            .collect()
+                    } else {
+                        BTreeMap::new()
+                    };
+                    self.areas.push(MapArea {
+                        vpn_range: VPNRange::new(remove_end, range_end),
+                        data_frames,
+                        map_type: self.areas[i].map_type,
+                        map_perm: self.areas[i].map_perm,
+                    });
+                }
+            }
+        }
+    }
 }
 
 pub struct MapArea {

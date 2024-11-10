@@ -1,5 +1,6 @@
 //! Implementation of  [`ProcessControlBlock`]
 
+use super::dead_lock::DeadLockDetect;
 use super::id::RecycleAllocator;
 use super::manager::insert_into_pid2process;
 use super::TaskControlBlock;
@@ -44,11 +45,13 @@ pub struct ProcessControlBlockInner {
     /// task resource allocator
     pub task_res_allocator: RecycleAllocator,
     /// mutex list
-    pub mutex_list: Vec<Option<Arc<dyn Mutex>>>,
+    pub mutex_list: Vec<Arc<dyn Mutex>>,
     /// semaphore list
-    pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
+    pub semaphore_list: Vec<Arc<Semaphore>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    /// if enable deadlock detect
+    pub deadlock_detect: Option<(DeadLockDetect, DeadLockDetect)>,
 }
 
 impl ProcessControlBlockInner {
@@ -119,6 +122,7 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detect: None,
                 })
             },
         });
@@ -245,6 +249,7 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    deadlock_detect: None,
                 })
             },
         });
@@ -278,6 +283,15 @@ impl ProcessControlBlock {
         add_task(task);
         child
     }
+
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
+        trace!("kernel: spawn");
+        let child = Self::new(elf_data);
+        let mut parent = self.inner_exclusive_access();
+        parent.children.push(Arc::clone(&child));
+        child
+    }
+
     /// get pid
     pub fn getpid(&self) -> usize {
         self.pid.0

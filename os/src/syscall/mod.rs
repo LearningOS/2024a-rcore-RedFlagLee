@@ -112,9 +112,12 @@ use sync::*;
 use thread::*;
 
 use crate::fs::Stat;
+use crate::mm::translated_byte_buffer;
+use crate::task::{current_task, current_user_token};
 
 /// handle syscall exception with `syscall_id` and other arguments
 pub fn syscall(syscall_id: usize, args: [usize; 4]) -> isize {
+    current_task().unwrap().inc_syscall_times(syscall_id);
     match syscall_id {
         SYSCALL_DUP => sys_dup(args[0]),
         SYSCALL_LINKAT => sys_linkat(args[1] as *const u8, args[3] as *const u8),
@@ -153,5 +156,20 @@ pub fn syscall(syscall_id: usize, args: [usize; 4]) -> isize {
         SYSCALL_CONDVAR_WAIT => sys_condvar_wait(args[0], args[1]),
         SYSCALL_KILL => sys_kill(args[0], args[1] as u32),
         _ => panic!("Unsupported syscall_id: {}", syscall_id),
+    }
+}
+
+fn bytes_of<T>(value: &T) -> &[u8] {
+    unsafe {
+        core::slice::from_raw_parts((value as *const T) as *const u8, core::mem::size_of::<T>())
+    }
+}
+
+fn mem_out<T>(virtual_ptr: usize, value: T) {
+    let mut results_bytes = bytes_of(&value);
+    let bufs = translated_byte_buffer(current_user_token(), virtual_ptr as _, results_bytes.len());
+    for buf in bufs {
+        buf.copy_from_slice(&results_bytes[..buf.len()]);
+        results_bytes = &results_bytes[buf.len()..];
     }
 }

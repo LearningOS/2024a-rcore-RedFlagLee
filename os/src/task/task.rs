@@ -4,8 +4,12 @@ use super::id::TaskUserRes;
 use super::{kstack_alloc, KernelStack, ProcessControlBlock, TaskContext};
 use crate::trap::TrapContext;
 use crate::{mm::PhysPageNum, sync::UPSafeCell};
+use alloc::collections::btree_map::BTreeMap;
 use alloc::sync::{Arc, Weak};
 use core::cell::RefMut;
+use core::num::NonZeroUsize;
+
+const BIG_STRIDE: usize = 10000;
 
 /// Task control block structure
 pub struct TaskControlBlock {
@@ -41,6 +45,22 @@ pub struct TaskControlBlockInner {
     pub task_status: TaskStatus,
     /// It is set when active exit or execution error occurs
     pub exit_code: Option<i32>,
+
+    /// Task information
+    pub task_info: TaskInfo,
+
+    /// Stride scheduling
+    pub stride: usize,
+    pub pass: usize,
+}
+
+/// Task information, used for `sys_task_info`
+#[derive(Default, Clone)]
+pub struct TaskInfo {
+    /// The first time the task is scheduled
+    pub first_schedule_time: Option<NonZeroUsize>,
+    /// The number of times each syscall is called
+    pub syscall_times: BTreeMap<u32, u32>,
 }
 
 impl TaskControlBlockInner {
@@ -51,6 +71,13 @@ impl TaskControlBlockInner {
     #[allow(unused)]
     fn get_status(&self) -> TaskStatus {
         self.task_status
+    }
+
+    /// set the first schedule time, used for `sys_task_info`
+    pub fn set_first_schedule_time(&mut self, time: usize) {
+        if self.task_info.first_schedule_time.is_none() {
+            self.task_info.first_schedule_time = Some(NonZeroUsize::new(time).unwrap());
+        }
     }
 }
 
@@ -75,9 +102,35 @@ impl TaskControlBlock {
                     task_cx: TaskContext::goto_trap_return(kstack_top),
                     task_status: TaskStatus::Ready,
                     exit_code: None,
+                    task_info: TaskInfo::default(),
+                    stride: 0,
+                    pass: BIG_STRIDE / 16,
                 })
             },
         }
+    }
+
+    /// increase the number of syscalls, used for `sys_task_info`
+    pub fn inc_syscall_times(&self, syscall_id: usize) {
+        let mut inner = self.inner_exclusive_access();
+        inner
+            .task_info
+            .syscall_times
+            .entry(syscall_id as u32)
+            .and_modify(|e| *e += 1)
+            .or_insert(1);
+    }
+
+    /// get task statistics info, used for `sys_task_info`
+    pub fn get_task_info(&self) -> TaskInfo {
+        self.inner_exclusive_access().task_info.clone()
+    }
+
+    /// set priority, used for `sys_set_priority`
+    pub fn set_priority(&self, prio: usize) {
+        let mut inner = self.inner_exclusive_access();
+        inner.stride = prio;
+        inner.pass = BIG_STRIDE / prio;
     }
 }
 

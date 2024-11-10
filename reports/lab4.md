@@ -1,0 +1,11 @@
+## 编程作业
+
+实现linkat接口。硬链接要求两个不同的目录项指向同一个文件，在我们的文件系统中也就是两个不同文件名在目录项DirEntry中指向同一个DiskInode磁盘块。参考Inode::create实现，通过对根目录root_inode上调用modify_disk_inode来对根目录扩容，并向目录写入一个指向原有Inode编号的目录项。在Inode里新增成员inode_id，并在create和find时对其赋值。
+
+实现unlinkat接口。取消一个文件路径到文件的链接，即在root_inode的所有目录项DirEnty上找不到name相同的。由于Inode没有实现在指定位置删除指定大小的接口，为了简单我们可以把对应的DirEntry置空，根据文件名找到目录项的过程可以参考Inode.find_inode_id里的实现。找到后记录对应Inode_id，后面再遍历目录项，当找不到该Inode_id后使用Inode.clear回收Inode的数据块，根据inode_id找到Inode可以参考Inode.find里的实现。
+
+实现fstat接口。大概结构参考sys_read，为File trait添加get_metadata方法，磁盘驱动号dev写死为0、inode编号ino通过根目录root_inode上调用find_inode_id得到、文件类型mode通过DiskInode.is_dir判断，硬连接数nlink通过对根目录遍历统计有相同inode_id数的目录项数量得到。
+
+## 问答作业
+
+root_inode损坏意味着根目录损坏，我们无法通过查根目录表来获取其它文件了。
